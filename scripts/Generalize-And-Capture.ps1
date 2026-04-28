@@ -158,13 +158,16 @@ Invoke-Az @('vm','generalize','-g',$ResourceGroup,'-n',$VmName,'-o','none')
 # 4. Capture image version
 Write-Host ""
 Write-Host "== Capturing image version $ImageVersion ==" -ForegroundColor Cyan
+# Source is a generalized VM, not a captured managed image, so we use
+# --virtual-machine (not --managed-image, which expects a separate
+# Microsoft.Compute/images resource).
 Invoke-Az @(
     'sig','image-version','create',
     '--resource-group', $ResourceGroup,
     '--gallery-name', $GalleryName,
     '--gallery-image-definition', $ImageDefinitionName,
     '--gallery-image-version', $ImageVersion,
-    '--managed-image', $vmId,
+    '--virtual-machine', $vmId,
     '--target-regions', "$TargetRegion=1=premium_lrs",
     '--replica-count', '1',
     '-o','none'
