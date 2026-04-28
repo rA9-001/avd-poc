@@ -104,45 +104,60 @@ Write-Host "  Snapshot: $snapshotName  (delete manually once you've verified the
 
 # 1. Sysprep inside the VM
 Write-Host ""
-Write-Host "== Running sysprep /generalize /shutdown inside $VmName ==" -ForegroundColor Cyan
+Write-Host "== Launching sysprep /generalize /shutdown inside $VmName ==" -ForegroundColor Cyan
+# Launch sysprep DETACHED so run-command can return immediately. If we
+# used -Wait, run-command would block until sysprep exits -- but
+# sysprep /shutdown shuts Windows down, killing the agent first, so
+# run-command would never come back cleanly.
 $sysprepScript = @'
 $ErrorActionPreference = "Stop"
 $sysprep = "$env:SystemRoot\System32\Sysprep\sysprep.exe"
 if (-not (Test-Path $sysprep)) { throw "sysprep.exe not found" }
 # Remove any leftover panther logs that can block re-running sysprep
 Remove-Item "$env:SystemRoot\System32\Sysprep\Panther" -Recurse -Force -ErrorAction SilentlyContinue
-Start-Process -FilePath $sysprep -ArgumentList "/generalize","/oobe","/shutdown","/mode:vm" -Wait
+Start-Process -FilePath $sysprep -ArgumentList "/generalize","/oobe","/shutdown","/mode:vm"
 '@
 
-# `az vm run-command invoke` is synchronous and hangs once the VM
-# shuts itself down (the agent disconnects mid-call). Run it as a
-# background job and abandon it after a short window -- by that time
-# sysprep has either started shutting down Windows or never will.
-$runJob = Start-Job -ScriptBlock {
-    param($rg, $vm, $script)
-    & az vm run-command invoke -g $rg -n $vm `
-        --command-id RunPowerShellScript --scripts $script -o none 2>&1
-} -ArgumentList $ResourceGroup, $VmName, $sysprepScript
+Invoke-Az @(
+    'vm','run-command','invoke',
+    '-g', $ResourceGroup,
+    '-n', $VmName,
+    '--command-id', 'RunPowerShellScript',
+    '--scripts', $sysprepScript,
+    '-o','none'
+)
+Write-Host "  Sysprep launched."
 
-if (Wait-Job $runJob -Timeout 180) {
-    Receive-Job $runJob -ErrorAction SilentlyContinue | Out-Null
-    Write-Host "  run-command returned."
-} else {
-    Write-Warning "run-command did not return within 3 min (expected: VM is shutting down). Continuing."
-    Stop-Job $runJob -ErrorAction SilentlyContinue
+# 2. Wait for sysprep to finish by polling Azure for the VM to
+#    actually shut itself down (PowerState/stopped). Sysprep on a
+#    modern Win11 + M365 image typically takes 5-15 min. Do NOT force
+#    a deallocate before this completes -- doing so captures a
+#    half-generalized OS disk and any VM you build from the image
+#    will hang at OS provisioning.
+Write-Host ""
+Write-Host "== Waiting for sysprep to shut the VM down (up to 30 min) ==" -ForegroundColor Cyan
+$deadline = (Get-Date).AddMinutes(30)
+$shutDown = $false
+while ((Get-Date) -lt $deadline) {
+    Start-Sleep -Seconds 30
+    $power = & az vm get-instance-view -g $ResourceGroup -n $VmName `
+        --query "instanceView.statuses[?starts_with(code, 'PowerState/')].code | [0]" -o tsv 2>$null
+    Write-Host "  power state: $power"
+    if ($power -in @('PowerState/stopped','PowerState/deallocated')) {
+        $shutDown = $true
+        break
+    }
 }
-Remove-Job $runJob -Force -ErrorAction SilentlyContinue
+if (-not $shutDown) {
+    throw "VM did not shut down within 30 min. Sysprep is likely stuck -- inspect C:\Windows\System32\Sysprep\Panther\setupact.log via Bastion before re-running."
+}
 
-# 2. Force the VM to a deallocated state. `az vm deallocate` is
-#    idempotent and waits until the resource is fully deallocated, so
-#    we don't need to poll for an intermediate PowerState/stopped (which
-#    is unreliable -- a shutting-down VM may go straight from running
-#    to deallocating and never report 'stopped').
+# 3. Deallocate (idempotent; ensures we're at PowerState/deallocated
+#    before generalize, even if sysprep only got us to 'stopped').
 Write-Host ""
 Write-Host "== Deallocating $VmName ==" -ForegroundColor Cyan
 Invoke-Az @('vm','deallocate','-g',$ResourceGroup,'-n',$VmName,'-o','none')
 
-# Verify we actually got there before we generalize.
 $power = & az vm get-instance-view -g $ResourceGroup -n $VmName `
     --query "instanceView.statuses[?starts_with(code, 'PowerState/')].code | [0]" -o tsv
 if ($power -ne 'PowerState/deallocated') {
@@ -150,12 +165,12 @@ if ($power -ne 'PowerState/deallocated') {
 }
 Write-Host "  Power state: $power"
 
-# 3. Generalize
+# 4. Generalize
 Write-Host ""
 Write-Host "== Generalizing $VmName ==" -ForegroundColor Cyan
 Invoke-Az @('vm','generalize','-g',$ResourceGroup,'-n',$VmName,'-o','none')
 
-# 4. Capture image version
+# 5. Capture image version
 Write-Host ""
 Write-Host "== Capturing image version $ImageVersion ==" -ForegroundColor Cyan
 # Source is a generalized VM, not a captured managed image, so we use
