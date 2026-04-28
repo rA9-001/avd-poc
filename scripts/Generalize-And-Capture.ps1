@@ -114,37 +114,45 @@ Remove-Item "$env:SystemRoot\System32\Sysprep\Panther" -Recurse -Force -ErrorAct
 Start-Process -FilePath $sysprep -ArgumentList "/generalize","/oobe","/shutdown","/mode:vm" -Wait
 '@
 
-# Run-command will return as soon as sysprep is launched; the VM then shuts down.
-# We tolerate the connection drop.
-try {
-    Invoke-Az @(
-        'vm','run-command','invoke',
-        '-g', $ResourceGroup,
-        '-n', $VmName,
-        '--command-id', 'RunPowerShellScript',
-        '--scripts', $sysprepScript,
-        '-o','none'
-    )
-} catch {
-    Write-Warning "run-command returned non-zero (expected when VM shuts down mid-call). Continuing."
+# `az vm run-command invoke` is synchronous and hangs once the VM
+# shuts itself down (the agent disconnects mid-call). Run it as a
+# background job and abandon it after a short window -- by that time
+# sysprep has either started shutting down Windows or never will.
+$runJob = Start-Job -ScriptBlock {
+    param($rg, $vm, $script)
+    & az vm run-command invoke -g $rg -n $vm `
+        --command-id RunPowerShellScript --scripts $script -o none 2>&1
+} -ArgumentList $ResourceGroup, $VmName, $sysprepScript
+
+if (Wait-Job $runJob -Timeout 180) {
+    Receive-Job $runJob -ErrorAction SilentlyContinue | Out-Null
+    Write-Host "  run-command returned."
+} else {
+    Write-Warning "run-command did not return within 3 min (expected: VM is shutting down). Continuing."
+    Stop-Job $runJob -ErrorAction SilentlyContinue
 }
+Remove-Job $runJob -Force -ErrorAction SilentlyContinue
 
-# 2. Give sysprep a moment to actually start shutting Windows down, then
-#    just deallocate. `az vm deallocate` is idempotent: it works whether
-#    the VM is running, stopping, stopped, or already deallocated, and
-#    leaves it in PowerState/deallocated either way. Polling for a
-#    specific intermediate state (e.g. PowerState/stopped) is unreliable
-#    -- depending on how sysprep exits and what the host does, the VM
-#    may go straight from running -> deallocating -> deallocated and
-#    never report 'stopped'.
+# 2. Force the VM to a deallocated state. `az vm deallocate` is
+#    idempotent and waits until the resource is fully deallocated, so
+#    we don't need to poll for an intermediate PowerState/stopped (which
+#    is unreliable -- a shutting-down VM may go straight from running
+#    to deallocating and never report 'stopped').
 Write-Host ""
-Write-Host "== Letting sysprep run, then deallocating ==" -ForegroundColor Cyan
-Start-Sleep -Seconds 60
-
-# 3. Deallocate + generalize (both idempotent)
-Write-Host ""
-Write-Host "== Deallocating and generalizing $VmName ==" -ForegroundColor Cyan
+Write-Host "== Deallocating $VmName ==" -ForegroundColor Cyan
 Invoke-Az @('vm','deallocate','-g',$ResourceGroup,'-n',$VmName,'-o','none')
+
+# Verify we actually got there before we generalize.
+$power = & az vm get-instance-view -g $ResourceGroup -n $VmName `
+    --query "instanceView.statuses[?starts_with(code, 'PowerState/')].code | [0]" -o tsv
+if ($power -ne 'PowerState/deallocated') {
+    throw "VM is in state '$power' after deallocate; refusing to generalize."
+}
+Write-Host "  Power state: $power"
+
+# 3. Generalize
+Write-Host ""
+Write-Host "== Generalizing $VmName ==" -ForegroundColor Cyan
 Invoke-Az @('vm','generalize','-g',$ResourceGroup,'-n',$VmName,'-o','none')
 
 # 4. Capture image version
