@@ -211,12 +211,16 @@ Invoke-Az @(
     '--registration-info', 'registration-token-operation=Update', "expiration-time=$expiry",
     '-o','none'
 )
-$token = Invoke-Az @(
-    'desktopvirtualization','hostpool','show',
-    '--resource-group', $ResourceGroup,
-    '--name', $HostPoolName,
-    '--query','registrationInfo.token','-o','tsv'
-)
+# `hostpool show` does NOT include registrationInfo.token (it's a
+# write-only secret on that resource). Use the dedicated
+# retrieve-registration-token endpoint instead.
+$token = & az desktopvirtualization hostpool retrieve-registration-token `
+    --resource-group $ResourceGroup --name $HostPoolName --query token -o tsv 2>$null
+if (-not $token) {
+    # Older CLI fallback: list-registration-tokens returns an array.
+    $token = & az desktopvirtualization hostpool list-registration-tokens `
+        --resource-group $ResourceGroup --name $HostPoolName --query '[0].token' -o tsv 2>$null
+}
 if (-not $token) { throw 'Failed to retrieve registration token.' }
 
 # ---------- 5. Resolve image + subnet ----------
