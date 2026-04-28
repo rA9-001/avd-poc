@@ -83,7 +83,10 @@ $ErrorActionPreference = 'Stop'
 
 function Invoke-Az {
     param([Parameter(Mandatory)][string[]] $Args)
-    Write-Host "az $($Args -join ' ')" -ForegroundColor DarkGray
+    $safe = $Args | ForEach-Object {
+        if ($_ -like '--admin-password=*') { '--admin-password=***' } else { $_ }
+    }
+    Write-Host "az $($safe -join ' ')" -ForegroundColor DarkGray
     $output = & az @Args
     if ($LASTEXITCODE -ne 0) { throw "az failed with exit code $LASTEXITCODE" }
     return $output
@@ -252,9 +255,11 @@ $subnetId = Invoke-Az @(
 
 # ---------- 6. Get admin password ----------
 $pwdPlain = $env:AVD_GOLDEN_VM_PASSWORD
-if (-not $pwdPlain) {
+if ([string]::IsNullOrWhiteSpace($pwdPlain)) {
     throw 'Set $env:AVD_GOLDEN_VM_PASSWORD before running this script.'
 }
+# Defensive trim of accidental wrapping quotes (common when copy-pasted).
+$pwdPlain = $pwdPlain.Trim().Trim('"').Trim("'")
 
 # ---------- 7. Decide next index (continue numbering for re-runs) ----------
 $existingNames = & az vm list -g $ResourceGroup `
@@ -301,7 +306,9 @@ for ($i = 0; $i -lt $vmsToCreate; $i++) {
         '--size', $VmSize,
         '--image', $imageId,
         '--admin-username', $AdminUsername,
-        '--admin-password', $pwdPlain,
+        # Use --flag=value form: az's argparse treats values starting
+        # with '-' as another option otherwise.
+        "--admin-password=$pwdPlain",
         '--subnet', $subnetId,
         '--public-ip-address', '""',
         '--nsg', '""',
