@@ -6,8 +6,8 @@
   After you have manually installed your applications on the golden VM, run
   this script. It will:
 
-    1. Run sysprep /generalize /shutdown inside the VM (via Run Command).
-    2. Wait for the VM to enter the stopped state.
+    1. Snapshot the OS disk (safety net -- sysprep is one-way).
+    2. Run sysprep /generalize /shutdown inside the VM (via Run Command).
     3. Deallocate and generalize the VM at the Azure level.
     4. Capture a new image version into the Compute Gallery.
 
@@ -129,19 +129,19 @@ try {
     Write-Warning "run-command returned non-zero (expected when VM shuts down mid-call). Continuing."
 }
 
-# 2. Wait for VM to be stopped
+# 2. Give sysprep a moment to actually start shutting Windows down, then
+#    just deallocate. `az vm deallocate` is idempotent: it works whether
+#    the VM is running, stopping, stopped, or already deallocated, and
+#    leaves it in PowerState/deallocated either way. Polling for a
+#    specific intermediate state (e.g. PowerState/stopped) is unreliable
+#    -- depending on how sysprep exits and what the host does, the VM
+#    may go straight from running -> deallocating -> deallocated and
+#    never report 'stopped'.
 Write-Host ""
-Write-Host "== Waiting for VM to reach 'VM stopped' power state ==" -ForegroundColor Cyan
-$deadline = (Get-Date).AddMinutes(20)
-do {
-    Start-Sleep -Seconds 15
-    $power = (Invoke-Az @('vm','get-instance-view','-g',$ResourceGroup,'-n',$VmName,
-        '--query','instanceView.statuses[?starts_with(code, ''PowerState/'')].code | [0]','-o','tsv'))
-    Write-Host "  power state: $power"
-    if ((Get-Date) -gt $deadline) { throw "Timed out waiting for VM to stop." }
-} while ($power -ne 'PowerState/stopped')
+Write-Host "== Letting sysprep run, then deallocating ==" -ForegroundColor Cyan
+Start-Sleep -Seconds 60
 
-# 3. Deallocate + generalize
+# 3. Deallocate + generalize (both idempotent)
 Write-Host ""
 Write-Host "== Deallocating and generalizing $VmName ==" -ForegroundColor Cyan
 Invoke-Az @('vm','deallocate','-g',$ResourceGroup,'-n',$VmName,'-o','none')
