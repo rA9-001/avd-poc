@@ -104,20 +104,28 @@ Write-Host "  Snapshot: $snapshotName  (delete manually once you've verified the
 
 # 1. Sysprep inside the VM
 Write-Host ""
-Write-Host "== Launching sysprep /generalize /shutdown inside $VmName ==" -ForegroundColor Cyan
-# Launch sysprep DETACHED so run-command can return immediately. If we
-# used -Wait, run-command would block until sysprep exits -- but
-# sysprep /shutdown shuts Windows down, killing the agent first, so
-# run-command would never come back cleanly.
+Write-Host "== Running sysprep /generalize /oobe (synchronous) inside $VmName ==" -ForegroundColor Cyan
+# Run sysprep WITHOUT /shutdown and WITH -Wait so run-command blocks
+# until sysprep actually exits. That way we get sysprep's real exit
+# code back -- if anything went wrong (Store/AppX packages, leftover
+# panther logs, etc.) the script throws here instead of silently
+# capturing a non-generalized OS disk.
 $sysprepScript = @'
 $ErrorActionPreference = "Stop"
 $sysprep = "$env:SystemRoot\System32\Sysprep\sysprep.exe"
 if (-not (Test-Path $sysprep)) { throw "sysprep.exe not found" }
-# Remove any leftover panther logs that can block re-running sysprep
 Remove-Item "$env:SystemRoot\System32\Sysprep\Panther" -Recurse -Force -ErrorAction SilentlyContinue
-Start-Process -FilePath $sysprep -ArgumentList "/generalize","/oobe","/shutdown","/mode:vm"
+$p = Start-Process -FilePath $sysprep `
+    -ArgumentList "/generalize","/oobe","/quiet","/mode:vm" -Wait -PassThru
+if ($p.ExitCode -ne 0) {
+    $log = (Get-Content "$env:SystemRoot\System32\Sysprep\Panther\setupact.log" -Tail 80 -ErrorAction SilentlyContinue) -join "`n"
+    throw "sysprep failed (exit $($p.ExitCode)). Tail of setupact.log:`n$log"
+}
+"sysprep OK"
 '@
 
+# Run-command can be slow; sysprep on a Win11 + M365 image takes ~10 min.
+# Bump the run-command timeout (default is 90 min so this is fine).
 Invoke-Az @(
     'vm','run-command','invoke',
     '-g', $ResourceGroup,
@@ -126,34 +134,12 @@ Invoke-Az @(
     '--scripts', $sysprepScript,
     '-o','none'
 )
-Write-Host "  Sysprep launched."
+Write-Host "  Sysprep completed successfully inside the VM."
 
-# 2. Wait for sysprep to finish by polling Azure for the VM to
-#    actually shut itself down (PowerState/stopped). Sysprep on a
-#    modern Win11 + M365 image typically takes 5-15 min. Do NOT force
-#    a deallocate before this completes -- doing so captures a
-#    half-generalized OS disk and any VM you build from the image
-#    will hang at OS provisioning.
-Write-Host ""
-Write-Host "== Waiting for sysprep to shut the VM down (up to 30 min) ==" -ForegroundColor Cyan
-$deadline = (Get-Date).AddMinutes(30)
-$shutDown = $false
-while ((Get-Date) -lt $deadline) {
-    Start-Sleep -Seconds 30
-    $power = & az vm get-instance-view -g $ResourceGroup -n $VmName `
-        --query "instanceView.statuses[?starts_with(code, 'PowerState/')].code | [0]" -o tsv 2>$null
-    Write-Host "  power state: $power"
-    if ($power -in @('PowerState/stopped','PowerState/deallocated')) {
-        $shutDown = $true
-        break
-    }
-}
-if (-not $shutDown) {
-    throw "VM did not shut down within 30 min. Sysprep is likely stuck -- inspect C:\Windows\System32\Sysprep\Panther\setupact.log via Bastion before re-running."
-}
-
-# 3. Deallocate (idempotent; ensures we're at PowerState/deallocated
-#    before generalize, even if sysprep only got us to 'stopped').
+# 2. Stop + deallocate the running, generalized VM. We don't need the
+#    in-OS shutdown because sysprep didn't include /shutdown -- the VM
+#    is still running but is now generalized. `vm deallocate` is fine
+#    on a running VM and waits until PowerState/deallocated.
 Write-Host ""
 Write-Host "== Deallocating $VmName ==" -ForegroundColor Cyan
 Invoke-Az @('vm','deallocate','-g',$ResourceGroup,'-n',$VmName,'-o','none')
@@ -165,12 +151,13 @@ if ($power -ne 'PowerState/deallocated') {
 }
 Write-Host "  Power state: $power"
 
-# 4. Generalize
+# 3. Mark generalized at the ARM level (this is just a flag flip --
+#    it does NOT run sysprep; sysprep already ran above).
 Write-Host ""
-Write-Host "== Generalizing $VmName ==" -ForegroundColor Cyan
+Write-Host "== Marking $VmName generalized at the ARM level ==" -ForegroundColor Cyan
 Invoke-Az @('vm','generalize','-g',$ResourceGroup,'-n',$VmName,'-o','none')
 
-# 5. Capture image version
+# 4. Capture image version
 Write-Host ""
 Write-Host "== Capturing image version $ImageVersion ==" -ForegroundColor Cyan
 # Source is a generalized VM, not a captured managed image, so we use
