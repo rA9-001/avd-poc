@@ -76,7 +76,10 @@ param(
     [string] $StorageAccountName,             # auto-discovered if empty
     [string] $ProfilesShareName   = 'profiles',
 
-    [string] $AvdAgentDscUrl      = 'https://wvdportalstorageblob.blob.core.windows.net/galleryartifacts/Configuration_1.0.02990.438.zip'
+    # Microsoft rotates the versioned Configuration_*.zip artifacts; old ones
+    # 404. The unversioned Configuration.zip is the always-current pointer
+    # they tell you to use in the portal flow.
+    [string] $AvdAgentDscUrl      = 'https://wvdportalstorageblob.blob.core.windows.net/galleryartifacts/Configuration.zip'
 )
 
 $ErrorActionPreference = 'Stop'
