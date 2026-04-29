@@ -344,16 +344,26 @@ for ($i = 0; $i -lt $vmsToCreate; $i++) {
         }
     } | ConvertTo-Json -Depth 6 -Compress
 
-    Invoke-Az @(
-        'vm','extension','set',
-        '--resource-group', $ResourceGroup,
-        '--vm-name', $vmName,
-        '--name', 'DSC',
-        '--publisher', 'Microsoft.Powershell',
-        '--version', '2.83',
-        '--settings', $dscSettings,
-        '-o','none'
-    )
+    # az on Linux/fish mangles inline JSON (the '{' gets parsed by the
+    # shell, the '"' get stripped). Write to a temp file and pass via
+    # @path -- az treats a leading @ as "read from this file".
+    $dscFile = [IO.Path]::Combine([IO.Path]::GetTempPath(), "dsc-$vmName.json")
+    Set-Content -LiteralPath $dscFile -Value $dscSettings -Encoding utf8
+    try {
+        Invoke-Az @(
+            'vm','extension','set',
+            '--resource-group', $ResourceGroup,
+            '--vm-name', $vmName,
+            '--name', 'DSC',
+            '--publisher', 'Microsoft.Powershell',
+            '--version', '2.83',
+            '--settings', "@$dscFile",
+            '-o','none'
+        )
+    }
+    finally {
+        Remove-Item -LiteralPath $dscFile -Force -ErrorAction SilentlyContinue
+    }
 
     Write-Host '  -> Granting access group "Virtual Machine User Login" on the VM'
     $vmId = Invoke-Az @('vm','show','-g',$ResourceGroup,'-n',$vmName,'--query','id','-o','tsv')
