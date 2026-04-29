@@ -337,13 +337,17 @@ for ($i = 0; $i -lt $vmsToCreate; $i++) {
     )
 
     Write-Host '  -> Installing AVD agent (DSC)'
+    # Configuration.ps1 in the current Configuration.zip only accepts
+    # HostPoolName + RegistrationInfoToken. Entra-join is handled by
+    # the AADLoginForWindows extension above, NOT by a DSC parameter
+    # (older docs showed an `aadJoin` property -- it no longer exists
+    # and DSC throws "A parameter cannot be found that matches ...").
     $dscSettings = @{
         modulesUrl            = $AvdAgentDscUrl
         configurationFunction = 'Configuration.ps1\AddSessionHost'
         properties            = @{
             hostPoolName          = $HostPoolName
             registrationInfoToken = $token
-            aadJoin               = $true
         }
     } | ConvertTo-Json -Depth 6 -Compress
 
