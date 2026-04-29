@@ -115,14 +115,19 @@ $ErrorActionPreference = "Stop"
 $sysprep = "$env:SystemRoot\System32\Sysprep\sysprep.exe"
 if (-not (Test-Path $sysprep)) { throw "sysprep.exe not found" }
 Remove-Item "$env:SystemRoot\System32\Sysprep\Panther" -Recurse -Force -ErrorAction SilentlyContinue
-$p = Start-Process -FilePath $sysprep `
-    -ArgumentList "/generalize","/oobe","/quiet","/mode:vm" -Wait -PassThru
+$p = Start-Process -FilePath $sysprep -ArgumentList @("/generalize","/oobe","/quiet","/mode:vm") -Wait -PassThru
 if ($p.ExitCode -ne 0) {
     $log = (Get-Content "$env:SystemRoot\System32\Sysprep\Panther\setupact.log" -Tail 80 -ErrorAction SilentlyContinue) -join "`n"
     throw "sysprep failed (exit $($p.ExitCode)). Tail of setupact.log:`n$log"
 }
 "sysprep OK"
 '@
+
+# Ship the script base64-encoded so nothing the wire does to whitespace,
+# quoting, equals signs, or backtick line-continuations can mangle it.
+# Decode + Invoke-Expression on the VM side.
+$b64 = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($sysprepScript))
+$wrapper = "Invoke-Expression ([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('$b64')))"
 
 # Run-command can be slow; sysprep on a Win11 + M365 image takes ~10 min.
 # Bump the run-command timeout (default is 90 min so this is fine).
@@ -131,7 +136,7 @@ Invoke-Az @(
     '-g', $ResourceGroup,
     '-n', $VmName,
     '--command-id', 'RunPowerShellScript',
-    '--scripts', $sysprepScript,
+    '--scripts', $wrapper,
     '-o','none'
 )
 Write-Host "  Sysprep completed successfully inside the VM."
