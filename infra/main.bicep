@@ -77,92 +77,6 @@ module law 'br/public:avm/res/operational-insights/workspace:0.7.0' = {
   }
 }
 
-// ---------------- Data Collection Rule for AVD Insights ----------------
-//
-// One DCR shared by every session host across every meeting. Each VM is
-// associated to it via a DataCollectionRuleAssociation in New-Meeting.ps1
-// after the AzureMonitorWindowsAgent extension is installed.
-//
-// Counters + xPath queries match the recipe Microsoft uses for AVD Insights
-// (host diagnostics, FSLogix, RDP user input delay, terminal services).
-
-module dcr 'br/public:avm/res/insights/data-collection-rule:0.11.0' = {
-  scope: rg
-  name: 'dpl-dcr'
-  params: {
-    name: 'dcr-${prefix}-avd'
-    location: location
-    tags: tags
-    dataCollectionRuleProperties: {
-      kind: 'Windows'
-      dataSources: {
-        performanceCounters: [
-          {
-            name: 'avdPerf'
-            streams: [ 'Microsoft-Perf' ]
-            samplingFrequencyInSeconds: 30
-            counterSpecifiers: [
-              '\\LogicalDisk(C:)\\% Free Space'
-              '\\LogicalDisk(C:)\\Avg. Disk Queue Length'
-              '\\LogicalDisk(C:)\\Avg. Disk sec/Read'
-              '\\LogicalDisk(C:)\\Avg. Disk sec/Write'
-              '\\LogicalDisk(C:)\\Current Disk Queue Length'
-              '\\Memory\\Available Mbytes'
-              '\\Memory\\Page Faults/sec'
-              '\\Memory\\Pages/sec'
-              '\\Memory\\% Committed Bytes In Use'
-              '\\PhysicalDisk(*)\\Avg. Disk Queue Length'
-              '\\PhysicalDisk(*)\\Avg. Disk sec/Read'
-              '\\PhysicalDisk(*)\\Avg. Disk sec/Transfer'
-              '\\PhysicalDisk(*)\\Avg. Disk sec/Write'
-              '\\Processor Information(_Total)\\% Processor Time'
-              '\\User Input Delay per Process(*)\\Max Input Delay'
-              '\\User Input Delay per Session(*)\\Max Input Delay'
-              '\\RemoteFX Network(*)\\Current TCP RTT'
-              '\\RemoteFX Network(*)\\Current UDP Bandwidth'
-              '\\Terminal Services\\Active Sessions'
-              '\\Terminal Services\\Inactive Sessions'
-              '\\Terminal Services\\Total Sessions'
-            ]
-          }
-        ]
-        windowsEventLogs: [
-          {
-            name: 'avdEvents'
-            streams: [ 'Microsoft-Event' ]
-            xPathQueries: [
-              'Application!*[System[(Level=1 or Level=2 or Level=3)]]'
-              'System!*[System[(Level=1 or Level=2 or Level=3)]]'
-              'Microsoft-Windows-TerminalServices-LocalSessionManager/Operational!*[System[(Level=1 or Level=2 or Level=3 or Level=4)]]'
-              'Microsoft-Windows-TerminalServices-RemoteConnectionManager/Admin!*[System[(Level=1 or Level=2 or Level=3 or Level=4)]]'
-              'Microsoft-FSLogix-Apps/Operational!*[System[(Level=1 or Level=2 or Level=3 or Level=4)]]'
-              'Microsoft-FSLogix-Apps/Admin!*[System[(Level=1 or Level=2 or Level=3 or Level=4)]]'
-            ]
-          }
-        ]
-      }
-      destinations: {
-        logAnalytics: [
-          {
-            name: 'lawDest'
-            workspaceResourceId: law.outputs.resourceId
-          }
-        ]
-      }
-      dataFlows: [
-        {
-          streams: [ 'Microsoft-Perf' ]
-          destinations: [ 'lawDest' ]
-        }
-        {
-          streams: [ 'Microsoft-Event' ]
-          destinations: [ 'lawDest' ]
-        }
-      ]
-    }
-  }
-}
-
 // ---------------- NAT gateway ----------------
 
 module natPip 'br/public:avm/res/network/public-ip-address:0.7.1' = {
@@ -369,4 +283,3 @@ output storageAccountName    string = storageAccountName
 output profilesShareName     string = profilesShareName
 output logAnalyticsWorkspaceName string = lawName
 output logAnalyticsWorkspaceId   string = law.outputs.resourceId
-output dataCollectionRuleId      string = dcr.outputs.resourceId
