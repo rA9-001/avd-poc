@@ -447,6 +447,17 @@ Write-Output 'FSLogix + Kerberos configured'
             '-o','none'
         )
     }
+
+    # The AVD agent runs DomainJoinedCheck once at service start. With
+    # Entra-join, AADLoginForWindows is async -- by the time DSC installs
+    # the agent the join often hasn't completed yet, so the check is
+    # cached as failed and the session host stays Unavailable forever
+    # even though dsregcmd later reports AzureAdJoined: YES. Rebooting
+    # forces RDAgentBootLoader to re-run the health checks against the
+    # now-completed join state. Also makes sure the FSLogix + Cloud
+    # Kerberos registry settings are picked up on first user logon.
+    Write-Host '  -> Restarting VM so AVD agent re-runs health checks against the completed Entra join'
+    Invoke-Az @('vm','restart','-g',$ResourceGroup,'-n',$vmName,'-o','none')
 }
 
 Write-Host ""
