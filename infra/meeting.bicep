@@ -59,7 +59,12 @@ module hostPool 'br/public:avm/res/desktop-virtualization/host-pool:0.6.0' = {
     preferredAppGroupType: 'Desktop'
     startVMOnConnect: true
     validationEnvironment: false
-    customRdpProperty: 'targetisaadjoined:i:1;enablerdsaadauth:i:1;audiocapturemode:i:1;audiomode:i:0;'
+    // Entra-joined session hosts: use `enablerdsaadauth:i:1` only.
+    // `targetisaadjoined:i:1` is the deprecated predecessor and Microsoft
+    // explicitly says not to set both -- combining them brokers the
+    // session OK (user gets assigned to a VM) but the connection then
+    // fails with a generic "Internal server error" on the client.
+    customRdpProperty: 'enablerdsaadauth:i:1;audiocapturemode:i:1;audiomode:i:0;'
     diagnosticSettings: [
       {
         name: 'to-law'
