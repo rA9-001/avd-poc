@@ -171,6 +171,15 @@ Write-Host "== Deploying meeting control plane ==" -ForegroundColor Cyan
 $lawId = Invoke-Az @('monitor','log-analytics','workspace','show',
     '-g', $ResourceGroup, '-n', $LogAnalyticsName, '--query','id','-o','tsv')
 
+# Look up the shared AVD-Insights DCR created by main.bicep. We attach
+# every session host to it after the AzureMonitorWindowsAgent extension
+# is installed so the AVD Insights workbook gets data.
+$dcrId = & az monitor data-collection rule show -g $ResourceGroup `
+    -n "dcr-$Prefix-avd" --query id -o tsv 2>$null
+if (-not $dcrId) {
+    Write-Warning "DCR 'dcr-$Prefix-avd' not found in $ResourceGroup. Re-run Bootstrap-Poc.ps1 to create it; AMA install will be skipped."
+}
+
 Invoke-Az @(
     'deployment','group','create',
     '--resource-group', $ResourceGroup,
@@ -372,8 +381,35 @@ for ($i = 0; $i -lt $vmsToCreate; $i++) {
         Remove-Item -LiteralPath $dscFile -Force -ErrorAction SilentlyContinue
     }
 
-    Write-Host '  -> Granting access group "Virtual Machine User Login" on the VM'
     $vmId = Invoke-Az @('vm','show','-g',$ResourceGroup,'-n',$vmName,'--query','id','-o','tsv')
+
+    if ($dcrId) {
+        Write-Host '  -> Installing AzureMonitorWindowsAgent + attaching DCR'
+        Invoke-Az @(
+            'vm','extension','set',
+            '--resource-group', $ResourceGroup,
+            '--vm-name', $vmName,
+            '--name', 'AzureMonitorWindowsAgent',
+            '--publisher', 'Microsoft.Azure.Monitor',
+            '--enable-auto-upgrade', 'true',
+            '-o','none'
+        )
+        # Idempotent DCR association. Name must be unique per VM.
+        $dcraName = "dcra-$vmName-avd"
+        $existsDcra = & az monitor data-collection rule association list `
+            --resource $vmId --query "[?name=='$dcraName'] | [0].id" -o tsv 2>$null
+        if (-not $existsDcra) {
+            Invoke-Az @(
+                'monitor','data-collection','rule','association','create',
+                '--name', $dcraName,
+                '--resource', $vmId,
+                '--rule-id', $dcrId,
+                '-o','none'
+            )
+        }
+    }
+
+    Write-Host '  -> Granting access group "Virtual Machine User Login" on the VM'
     $exists = & az role assignment list --assignee $groupId --scope $vmId `
         --role 'Virtual Machine User Login' --query '[0].id' -o tsv 2>$null
     if (-not $exists) {
