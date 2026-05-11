@@ -112,6 +112,19 @@ Write-Host "== Running sysprep /generalize /oobe (synchronous) inside $VmName ==
 # capturing a non-generalized OS disk.
 $sysprepScript = @'
 $ErrorActionPreference = "Stop"
+
+# Suppress Windows 11 OOBE per-user "Choose privacy settings" screen.
+# Without this, every attendee gets the privacy/diagnostics wizard the
+# first time they sign in to a fresh session host. This policy applies
+# machine-wide so it covers every user that logs on to the image.
+$oobePol = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\OOBE"
+New-Item -Path $oobePol -Force | Out-Null
+New-ItemProperty -Path $oobePol -Name DisablePrivacyExperience -Value 1 -PropertyType DWord -Force | Out-Null
+# Also suppress the Cortana / voice activation prompt that can pop up.
+$oobeRoot = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\OOBE"
+New-Item -Path $oobeRoot -Force | Out-Null
+New-ItemProperty -Path $oobeRoot -Name DisableVoice -Value 1 -PropertyType DWord -Force | Out-Null
+
 $sysprep = "$env:SystemRoot\System32\Sysprep\sysprep.exe"
 if (-not (Test-Path $sysprep)) { throw "sysprep.exe not found" }
 Remove-Item "$env:SystemRoot\System32\Sysprep\Panther" -Recurse -Force -ErrorAction SilentlyContinue
